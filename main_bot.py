@@ -1,44 +1,62 @@
+# main_bot.py (Fase 1: Logica e Comandi)
 import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Importiamo i moduli ora necessari
 import analysis
+import risk_management # RIATTIVATO
 
+# Leggi le variabili d'ambiente
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("ERRORE: Variabile TELEGRAM_TOKEN non trovata!")
 
+# Parametri globali (Rischio e Capitale)
+CAPITALE_INIZIALE_DEMO = 10000.0
+RISK_PER_TRADE_PERCENT = 1.5 # MAX 1.5% di rischio
+RR_RATIO = 2.0
+
+# Configura logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def analysis_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Esecuzione analisi...")
-    chat_id = context.job.chat_id
-    risultato_analisi = analysis.analyze_market()
-    await context.bot.send_message(chat_id, text=f"Report Orario:\n{risultato_analisi}")
+# Stato del Bot (Aggiornato per supportare posizioni complete)
+bot_state = {
+    "is_running": False,
+    "mode": "DEMO",
+    "balance": CAPITALE_INIZIALE_DEMO,
+    "open_positions": [], # useremo solo un trade alla volta per ora
+    "closed_trades": []
+}
+
+# --- FUNZIONI COMANDI ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bot_state["is_running"] = True
     chat_id = update.effective_chat.id
+    
     current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
-    if not current_jobs:
-        context.job_queue.run_repeating(analysis_job, interval=3600, first=10, name=str(chat_id), chat_id=chat_id)
-        await update.message.reply_text("✅ Bot avviato! Analisi oraria attivata.")
-    else:
-        await update.message.reply_text("ℹ️ Bot già in esecuzione.")
+    for job in current_jobs: job.schedule_removal()
+
+    # Aggiungiamo il job di analisi oraria
+    context.job_queue.run_repeating(market_analysis_job, interval=3600, first=10, name=str(chat_id), chat_id=chat_id)
+    
+    await update.message.reply_text('✅ **AI Trading Bot AVVIATO**\nAnalisi oraria attivata. Modalità: DEMO.', parse_mode='Markdown')
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bot_state["is_running"] = False
     chat_id = update.effective_chat.id
     current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
-    for job in current_jobs:
-        job.schedule_removal()
-    await update.message.reply_text("🛑 Bot fermato. Analisi interrotta.")
+    for job in current_jobs: job.schedule_removal()
+    await update.message.reply_text('🛑 **AI Trading Bot FERMATO**.', parse_mode='Markdown')
 
-def main() -> None:
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stop", stop))
-    application.run_polling()
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    mode = bot_state["mode"]
+    balance = bot_state["balance"]
+    
+    positions = "Nessuna posizione aperta."
+    if bot_state["open_positions"]:
+        p = bot_state["open_positions"][0]
+        positions = f"1️⃣ **{p['direction']} XAU/USD**\n   Entry: ${p['entry_price']}\n   SL: ${p['stop_loss']} | TP: ${p['take_profit']}"
 
-if __name__ == '__main__':
-    main()
+    status_msg = f"""
